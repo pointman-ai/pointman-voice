@@ -1,0 +1,87 @@
+# Voice calls with your agents, run on your own machines: listening, turn-taking and each agent's own voice.
+
+[extension]
+id = "voice"
+name = "Voice"
+version = "0.1.0"
+publisher = "pointman-ai"
+summary = "Talk with your agents in a call, run on your own machines: each agent speaks in its own voice."
+node = ">=0.1,<1"
+platforms = ["macos-arm64", "linux-x86_64"]
+
+[run]
+command = ["python", "-m", "pointman_voice"]
+runtime = "python3.12"
+
+[permissions]
+network = true          # fetches the voice models once, from Hugging Face
+gpu = true
+agents = true           # which agents run here, for who can join a call
+post = true             # a call's transcript and summary, in its thread
+folders = ["~/.cache/huggingface/hub", "~/.local/state/pointman/voice"]
+
+[settings]
+type = "object"
+
+[settings.properties.stt]
+type = "string"
+title = "Speech to text"
+description = "auto: Parakeet on a Mac, Whisper turbo on Linux. apple: the Mac's own recognizer."
+enum = ["auto", "parakeet", "whisper", "apple"]
+default = "auto"
+
+[settings.properties.barge_in_s]
+type = "number"
+title = "Barge-in after"
+description = "Seconds of your speech before an agent stops talking."
+minimum = 0.1
+maximum = 1.0
+default = 0.2
+
+[settings.properties.commit_silence_s]
+type = "number"
+title = "Silence before your words count"
+description = "Seconds of silence before what you said is taken as said."
+minimum = 0.2
+maximum = 2.0
+default = 0.6
+
+[settings.properties.max_wait_s]
+type = "number"
+title = "Longest wait for your turn's end"
+description = "Seconds an agent waits for you to go on before it answers anyway."
+minimum = 0.5
+maximum = 5.0
+default = 2.0
+
+[settings.properties.filler_after_s]
+type = "number"
+title = "Say a short line after"
+description = "Seconds an agent works without speaking before it says what it's doing."
+minimum = 0.5
+maximum = 5.0
+default = 1.5
+
+[[commands]]
+kind = "voice.call"
+title = "Start a voice call"
+params = { type = "object", properties = { agents = { type = "string", description = "The agents to call, by handle: @research @design" } }, required = ["agents"] }
+slash = "call"
+summary = "Call agents by voice: /voice call @research @design"
+
+[[commands]]
+kind = "voice.voices"
+title = "List the voices"
+params = { type = "object", properties = {} }
+slash = "voices"
+summary = "The English voices an agent can have, best first, and whether they're downloaded"
+
+[[commands]]
+kind = "voice.sample"
+title = "Hear a voice"
+params = { type = "object", properties = { voice = { type = "string", description = "A voice's id, as af_heart" }, speed = { type = "number", minimum = 0.5, maximum = 2, default = 1 }, name = { type = "string", maxLength = 40, description = "The agent's name, said in the sample" }, text = { type = "string", maxLength = 200 } }, required = ["voice"] }
+outputs = ["audio"]
+
+[[events]]
+name = "voice.status"
+description = "The voice models on this machine: ready, or how far their download has got."
