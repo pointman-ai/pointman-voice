@@ -38,8 +38,14 @@ class ExtensionTests(unittest.TestCase):
             self.assertTrue(Path(body["files"][0]["file"]).is_file())
             return {"asset_id": 4800 + len(self.published), "version_id": 1}
 
-        self.node = StandInNode(ROOT, methods={"files.publish": publish,
-                                               "agents.sessions": lambda p: {"agents": AGENTS}},
+        self.sessions_error = None
+
+        def sessions(p):
+            if self.sessions_error:
+                raise RuntimeError(self.sessions_error)
+            return {"agents": AGENTS}
+
+        self.node = StandInNode(ROOT, methods={"files.publish": publish, "agents.sessions": sessions},
                                 env={"HF_HUB_OFFLINE": "1",
                                      "POINTMAN_VOICE_CALLS": str(Path(self.tmp.name) / "calls")},
                                 machine="mac-test")
@@ -100,11 +106,17 @@ class ExtensionTests(unittest.TestCase):
         text = self.node.run("voice.call", {"agents": "@research @oai, @scene"}).result["text"]
         self.assertIn("| @research | can join |", text)
         self.assertIn("v1 calls are for Claude agents", text)
-        self.assertIn("| @scene | doesn't run on mac-test |", text)
+        self.assertIn("| @scene | no session on mac-test yet |", text)
         self.assertIn("aren't open yet", text)
         with self.assertRaises(ExtensionFailed) as caught:
             self.node.run("voice.call", {"agents": "  "})
         self.assertIn("Who should join?", str(caught.exception))
+
+    def test_a_failed_agents_list_fails_the_call_with_the_nodes_reason(self):
+        self.sessions_error = "this node runs no agents"
+        with self.assertRaises(ExtensionFailed) as caught:
+            self.node.run("voice.call", {"agents": "@research"})
+        self.assertIn("this node runs no agents", str(caught.exception))
 
     def test_health_has_the_models_and_never_fails_while_they_download(self):
         parts = self.node.call("health.check")

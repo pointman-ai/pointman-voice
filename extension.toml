@@ -17,7 +17,6 @@ runtime = "python3.12"
 network = true          # fetches the voice models once, from Hugging Face
 gpu = true
 agents = true           # which agents run here, for who can join a call
-post = true             # a call's transcript and summary, in its thread
 folders = ["~/.cache/huggingface/hub", "~/.local/state/pointman/voice"]
 
 [settings]

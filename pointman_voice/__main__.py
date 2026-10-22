@@ -150,17 +150,15 @@ def call(job) -> dict:
     odd = [h for h in handles if not HANDLE.match(h)]
     if odd:
         raise ValueError(f"{', '.join(odd)} isn't an agent's handle.")
-    try:
-        here = {a.get("handle"): a for a in ext.request("agents.sessions", {}).get("agents", [])}
-    except Exception as e:  # noqa: BLE001 - an older node: say what we can
-        ext.log(f"agents.sessions: {e}")
-        here = {}
+    # the node lists the agents it has woken since it started: one not woken yet has no session here.
+    # A failed request fails the job with the node's own reason (RuntimeError), never an empty list
+    here = {a.get("handle"): a for a in ext.request("agents.sessions", {}).get("agents", [])}
 
     rows, ready = [], 0
     for h in handles:
         agent = here.get(h)
         if agent is None:
-            rows.append(f"| @{h} | doesn't run on {machine()} |")
+            rows.append(f"| @{h} | no session on {machine()} yet |")
         elif (agent.get("client") or "claude") not in LIVE_CLIENTS:
             rows.append(f"| @{h} | a {agent.get('client')} agent: v1 calls are for Claude agents |")
         else:
