@@ -67,7 +67,7 @@ class ExtensionTests(unittest.TestCase):
 
     def test_it_says_hello(self):
         self.assertEqual(self.info.id, "voice")
-        self.assertEqual(self.info.version, "0.1.0")
+        self.assertEqual(self.info.version, "0.2.0")
 
     def test_the_voices_list_is_there_before_the_model_is(self):
         result = self.node.run("voice.voices").result

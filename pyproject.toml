@@ -1,6 +1,6 @@
 [project]
 name = "pointman-voice"
-version = "0.1.0"
+version = "0.2.0"
 description = "Voice calls with your agents, run on your own machines."
 requires-python = ">=3.12,<3.13"
 dependencies = [
