@@ -1,7 +1,8 @@
 """The voice extension's process: `python -m pointman_voice`, started and spoken to by the node.
 
-- `/voice call @research @design` checks who can join a call with you and what this machine has ready. The
-  call itself comes in a later version, with the node's two-way call audio and the call engine.
+- `/voice call @research @design` starts a call and opens it as a call pane on the device that ran it; its
+  post's Join button (`voice.join`) opens it on any other. Until the engine speaks for the agents, the call
+  plays each device's own mic back to it a second later, and says which agents could join.
 - `voice.voices` and `voice.sample` are the apps' voice picker's: Kokoro's English voices, best first, and a
   short sample in one of them, published as a file and never posted.
 - Health has one part of its own: the voice models, ready or how far their download has got (never failing).
@@ -19,10 +20,11 @@ import wave  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import pointman_extension_types as types  # noqa: E402
-from pointman_extension import Extension  # noqa: E402
+from pointman_extension import Extension, Refused  # noqa: E402
 
 from . import models as model_files  # noqa: E402
 from .engine import tts  # noqa: E402
+from .room import DOWN_RATE, UP_RATE, Calls, Ended  # noqa: E402
 from .voices import catalogue, known  # noqa: E402
 
 ext = Extension()
@@ -149,30 +151,108 @@ def _handles(raw: str) -> list[str]:
 @ext.command("voice.call")
 def call(job) -> dict:
     handles = _handles(str(job.params.get("agents") or ""))
-    if not handles:
-        raise ValueError("Who should join? Name them: /voice call @research @design")
     odd = [h for h in handles if not HANDLE.match(h)]
     if odd:
         raise ValueError(f"{', '.join(odd)} isn't an agent's handle.")
-    # the node lists the agents it has woken since it started: one not woken yet has no session here.
-    # A failed request fails the job with the node's own reason (RuntimeError), never an empty list
-    here = {a.handle.handle: a for a in ext.request(types.AgentsSessionsRequest()).agents if a.handle}
-
     rows, ready = [], 0
-    for h in handles:
-        agent = here.get(h)
-        if agent is None:
-            rows.append(f"| @{h} | no session on {machine()} yet |")
-        elif (agent.client or "claude") not in LIVE_CLIENTS:
-            rows.append(f"| @{h} | a {agent.client} agent: v1 calls are for Claude agents |")
-        else:
-            ready += 1
-            rows.append(f"| @{h} | can join |")
-    lines = [f"**Voice calls aren't open yet.** The call itself comes with the node's call audio and the "
-             f"engine. Here's what {machine()} has ready for one with you and {len(handles)} "
-             f"agent{'s' if len(handles) != 1 else ''}:", "", "| Agent | |", "|---|---|", *rows, "",
-             models.summary()]
-    return {"text": "\n".join(lines), "agents": handles, "can_join": ready}
+    if handles:
+        # the node lists the agents it has woken since it started: one not woken yet has no session here.
+        # A failed request fails the job with the node's own reason (RuntimeError), never an empty list
+        here = {a.handle.handle: a for a in ext.request(types.AgentsSessionsRequest()).agents if a.handle}
+        for h in handles:
+            agent = here.get(h)
+            if agent is None:
+                rows.append(f"| @{h} | no session on {machine()} yet |")
+            elif (agent.client or "claude") not in LIVE_CLIENTS:
+                rows.append(f"| @{h} | a {agent.client} agent: v1 calls are for Claude agents |")
+            else:
+                ready += 1
+                rows.append(f"| @{h} | can join |")
+    lines = ["**A voice call.** Agents don't speak in calls yet: until they do, the call plays your own mic "
+             "back to you a second later, to try the sound. Join from another device with the button."]
+    if rows:
+        lines += ["", "| Agent | |", "|---|---|", *rows]
+    lines += ["", models.summary()]
+    text = "\n".join(lines)
+    c = calls.start(agents=handles, text=text)
+    return {**_answer(c), "agents": handles, "can_join": ready}
+
+
+@ext.command("voice.join")
+def join(job) -> dict:
+    """The call post's Join button: the call's pane, on the device that tapped it. Its answer replaces the
+    post's blocks, so it says the post again, Join button and all."""
+    try:
+        c = calls.get(str(job.params.get("call") or ""))
+    except Ended as e:
+        raise ValueError(str(e)) from None
+    return _answer(c)
+
+
+def _answer(c) -> dict:
+    return {"text": c.text, "call": c.id,
+            "blocks": [{"type": "actions", "buttons": [
+                {"title": "Join", "command": "voice.join", "params": {"call": c.id}}]}],
+            "pane": {"open": "call", "target": {"call": c.id}}}
+
+
+# ---------------------------------------------------------------- the call pane
+
+seats: dict[str, object] = {}                 # pane id → its Pane, for what the call sends it
+
+
+def _send_event(pane: str, event: dict) -> None:
+    p = seats.get(pane)
+    if p is not None:
+        p.send(types.PaneEventRequest(event=event))
+
+
+def _send_audio(pane: str, captured_ms: int, opus: bytes) -> None:
+    p = seats.get(pane)
+    if p is not None:
+        p.send(types.PaneAudioRequest(captured_ms=captured_ms, opus=opus))
+
+
+calls = Calls(_send_event, _send_audio)
+
+
+@ext.pane("call")
+def call_pane(pane) -> types.PaneOpenResponse:
+    person = pane.viewer.person if pane.viewer else None
+    handle = (person.handle if person else None) or (person.id.value if person and person.id else "") or "you"
+    seats[pane.id] = pane
+    try:
+        calls.sit(str(pane.target.get("call") or ""), pane.id, handle)
+    except Ended as e:
+        seats.pop(pane.id, None)
+        raise ValueError(str(e)) from None
+
+    @pane.on_input
+    def control(event: types.PaneInput) -> None:
+        try:
+            calls.control(pane.id, event.kind, event.fields or {})
+        except (Ended, ValueError) as e:
+            raise Refused(str(e)) from None
+
+    @pane.on_close
+    def closed(_reason: str) -> None:
+        calls.leave(pane.id)
+        seats.pop(pane.id, None)
+
+    opus = types.PaneOpenResponse.Call.Sound.Codec.CODEC_OPUS
+    return types.PaneOpenResponse(title="Voice call", call=types.PaneOpenResponse.Call(
+        down=types.PaneOpenResponse.Call.Sound(codec=opus, rate=DOWN_RATE, channels=1),
+        up=types.PaneOpenResponse.Call.Sound(codec=opus, rate=UP_RATE, channels=1)))
+
+
+@ext.method("pane.mic")
+def mic(req: types.PaneMicRequest) -> None:
+    calls.mic(req.pane.value if req.pane else "", req.captured_ms, req.opus)
+
+
+@ext.method("pane.viewers")
+def viewers(req: types.PaneViewersRequest) -> None:
+    calls.viewers(req.pane.value if req.pane else "", req.attached)
 
 
 @ext.method("health.check")

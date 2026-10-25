@@ -3,7 +3,7 @@
 [extension]
 id = "voice"
 name = "Voice"
-version = "0.2.0"
+version = "0.3.0"
 publisher = "pointman-ai"
 summary = "Talk with your agents in a call, run on your own machines: each agent speaks in its own voice."
 node = ">=0.2.0"
@@ -64,9 +64,15 @@ default = 1.5
 [[commands]]
 kind = "voice.call"
 title = "Start a voice call"
-params = { type = "object", properties = { agents = { type = "string", description = "The agents to call, by handle: @research @design" } }, required = ["agents"] }
+params = { type = "object", properties = { agents = { type = "string", description = "The agents to call, by handle: @research @design" } } }
 slash = "call"
-summary = "Call agents by voice: /voice call @research @design"
+summary = "Start a voice call: /voice call @research @design"
+
+[[commands]]
+kind = "voice.join"
+title = "Join the call"
+params = { type = "object", properties = { call = { type = "string", description = "The call, as /voice call made it" } }, required = ["call"] }
+summary = "Open a call on this device: the call post's Join button"
 
 [[commands]]
 kind = "voice.voices"
@@ -84,3 +90,9 @@ outputs = ["audio"]
 [[events]]
 name = "voice.status"
 description = "The voice models on this machine: ready, or how far their download has got."
+
+[[panes]]
+id = "call"
+title = "Voice call"
+format = "call"
+opens = ["command"]

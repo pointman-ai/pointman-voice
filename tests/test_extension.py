@@ -67,7 +67,7 @@ class ExtensionTests(unittest.TestCase):
 
     def test_it_says_hello(self):
         self.assertEqual(self.info.id, "voice")
-        self.assertEqual(self.info.version, "0.2.0")
+        self.assertEqual(self.info.version, "0.3.0")
 
     def test_the_voices_list_is_there_before_the_model_is(self):
         result = self.node.run("voice.voices").result
@@ -110,10 +110,10 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("| @research | can join |", text)
         self.assertIn("v1 calls are for Claude agents", text)
         self.assertIn("| @scene | no session on mac-test yet |", text)
-        self.assertIn("aren't open yet", text)
-        with self.assertRaises(ExtensionFailed) as caught:
-            self.node.run("voice.call", {"agents": "  "})
-        self.assertIn("Who should join?", str(caught.exception))
+        self.assertIn("plays your own mic back", text)
+        alone = self.node.run("voice.call", {"agents": "  "}).result   # a call with nobody else: just the echo
+        self.assertEqual(alone["agents"], [])
+        self.assertNotIn("| Agent |", alone["text"])
 
     def test_a_failed_agents_list_fails_the_call_with_the_nodes_reason(self):
         self.sessions_error = "this node runs no agents"
