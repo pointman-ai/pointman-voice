@@ -17,13 +17,15 @@ if SDK:
     sys.path.insert(0, SDK)
 
 try:
+    import pointman_extension_types as types
     from pointman_extension_testing import ExtensionFailed, StandInNode
     import numpy  # noqa: F401  - the package's environment
 except ImportError:
     StandInNode = None
-
-AGENTS = [{"handle": "research", "client": "claude", "session_id": "s1", "thread_id": 1, "folder": "/x"},
-          {"handle": "oai", "client": "codex", "session_id": "s2", "thread_id": 1, "folder": "/x"}]
+else:
+    AGENTS = [types.AgentSessionOnMachine(handle=types.MemberRef(handle=h), client=client, session_id=sid,
+                                          thread=types.ThreadId(value="thr_1"), folder="/x")
+              for h, client, sid in (("research", "claude", "s1"), ("oai", "codex", "s2"))]
 
 
 @unittest.skipUnless(StandInNode, "needs the node's Python SDK and the package's environment")
@@ -32,18 +34,19 @@ class ExtensionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.published = []
 
-        def publish(p):
-            body = p["body"]
+        def publish(p):               # a FilesPublishRequest
+            body = p.body
             self.published.append(body)
             self.assertTrue(Path(body["files"][0]["file"]).is_file())
-            return {"asset_id": 4800 + len(self.published), "version_id": 1}
+            return types.FilesPublishResponse(file=types.FileId(value=f"file_{4800 + len(self.published)}"),
+                                              version=types.FileVersionId(value="ver_1"))
 
         self.sessions_error = None
 
         def sessions(p):
             if self.sessions_error:
                 raise RuntimeError(self.sessions_error)
-            return {"agents": AGENTS}
+            return types.AgentsSessionsResponse(agents=AGENTS)
 
         self.node = StandInNode(ROOT, methods={"files.publish": publish, "agents.sessions": sessions},
                                 env={"HF_HUB_OFFLINE": "1",
@@ -63,8 +66,8 @@ class ExtensionTests(unittest.TestCase):
         return False
 
     def test_it_says_hello(self):
-        self.assertEqual(self.info["id"], "voice")
-        self.assertEqual(self.info["version"], "0.1.0")
+        self.assertEqual(self.info.id, "voice")
+        self.assertEqual(self.info.version, "0.2.0")
 
     def test_the_voices_list_is_there_before_the_model_is(self):
         result = self.node.run("voice.voices").result
@@ -119,10 +122,10 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("this node runs no agents", str(caught.exception))
 
     def test_health_has_the_models_and_never_fails_while_they_download(self):
-        parts = self.node.call("health.check")
-        self.assertEqual(parts[0]["id"], "extension/voice/models")
-        self.assertEqual(parts[0]["state"], "ok")
-        self.assertTrue(parts[0]["why"].endswith("."))
+        parts = self.node.call(types.HealthCheckRequest()).parts
+        self.assertEqual(parts[0].id, "extension/voice/models")
+        self.assertEqual(parts[0].state, types.Health.Part.State.STATE_OK)
+        self.assertTrue(parts[0].why.endswith("."))
 
     def test_status_reports_the_models(self):
         for _ in range(50):

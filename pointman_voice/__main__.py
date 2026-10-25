@@ -18,10 +18,8 @@ import threading  # noqa: E402
 import wave  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-try:
-    from pointman_extension import Extension
-except ImportError:                 # a node from before the rename
-    from mb_extension import Extension  # type: ignore[no-redef]
+import pointman_extension_types as types  # noqa: E402
+from pointman_extension import Extension  # noqa: E402
 
 from . import models as model_files  # noqa: E402
 from .engine import tts  # noqa: E402
@@ -118,19 +116,25 @@ def sample(job) -> dict:
         w.setframerate(rate)
         w.writeframes(pcm)
     seconds = round(len(pcm) / 2 / rate, 2)
-    answer = ext.request("files.publish", {"body": {
+    answer = ext.request(types.FilesPublishRequest(body={
         "project": {"slug": "voice-samples", "name": "Voice samples"},
         "asset": {"path": f"samples/{path.name}", "title": f"{voice} at {speed:g}×", "kind": "audio"},
         "caption": text,
         "files": [{"role": "main", "file": str(path), "name": path.name, "mime": "audio/wav",
                    "size": path.stat().st_size, "duration": seconds}],
-    }}, timeout=120)
-    entry = {"asset_id": answer.get("asset_id"), "seconds": seconds}
+    }), timeout=120)
+    entry = {"asset_id": _number(answer.file), "seconds": seconds}
     with lock:
         _, index = _sample_index()
         index[key] = entry
         (folder / "index.json").write_text(json.dumps(index))
     return {**entry, "voice": voice, "speed": speed, "text": text}
+
+
+def _number(ref) -> int | None:
+    """A typed id's number: file_4801 is 4801."""
+    tail = (ref.value if ref is not None else "").rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else None
 
 
 def _handles(raw: str) -> list[str]:
@@ -152,15 +156,15 @@ def call(job) -> dict:
         raise ValueError(f"{', '.join(odd)} isn't an agent's handle.")
     # the node lists the agents it has woken since it started: one not woken yet has no session here.
     # A failed request fails the job with the node's own reason (RuntimeError), never an empty list
-    here = {a.get("handle"): a for a in ext.request("agents.sessions", {}).get("agents", [])}
+    here = {a.handle.handle: a for a in ext.request(types.AgentsSessionsRequest()).agents if a.handle}
 
     rows, ready = [], 0
     for h in handles:
         agent = here.get(h)
         if agent is None:
             rows.append(f"| @{h} | no session on {machine()} yet |")
-        elif (agent.get("client") or "claude") not in LIVE_CLIENTS:
-            rows.append(f"| @{h} | a {agent.get('client')} agent: v1 calls are for Claude agents |")
+        elif (agent.client or "claude") not in LIVE_CLIENTS:
+            rows.append(f"| @{h} | a {agent.client} agent: v1 calls are for Claude agents |")
         else:
             ready += 1
             rows.append(f"| @{h} | can join |")
@@ -172,10 +176,11 @@ def call(job) -> dict:
 
 
 @ext.method("health.check")
-def health(_params) -> list[dict]:
+def health(_req: types.HealthCheckRequest) -> types.HealthCheckResponse:
     """Its own part under the extension's: the models, ok while they download (never failing)."""
-    return [{"id": "extension/voice/models", "kind": "models", "name": "Voice models", "state": "ok",
-             "why": models.summary()}]
+    return types.HealthCheckResponse(parts=[types.Health.Part(
+        id="extension/voice/models", kind="models", name="Voice models", state=types.Health.Part.State.STATE_OK,
+        why=models.summary())])
 
 
 def status() -> None:
