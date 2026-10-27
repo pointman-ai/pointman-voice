@@ -3,10 +3,10 @@
 [extension]
 id = "voice"
 name = "Voice"
-version = "0.3.0"
+version = "0.4.0"
 publisher = "pointman-ai"
 summary = "Talk with your agents in a call, run on your own machines: each agent speaks in its own voice."
-node = ">=0.2.0"
+node = ">=0.4.0"
 platforms = ["macos-arm64", "linux-x86_64"]
 
 [run]
