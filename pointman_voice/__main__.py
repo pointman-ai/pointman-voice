@@ -134,8 +134,8 @@ def sample(job) -> dict:
 
 
 def _number(ref) -> int | None:
-    """A typed id's number: file_4801 is 4801."""
-    tail = (ref.value if ref is not None else "").rsplit("_", 1)[-1]
+    """A reference's number: file_4801 is 4801."""
+    tail = (ref.id if ref is not None else "").rsplit("_", 1)[-1]
     return int(tail) if tail.isdigit() else None
 
 
@@ -158,7 +158,7 @@ def call(job) -> dict:
     if handles:
         # the node lists the agents it has woken since it started: one not woken yet has no session here.
         # A failed request fails the job with the node's own reason (RuntimeError), never an empty list
-        here = {a.handle.handle: a for a in ext.request(types.AgentsSessionsRequest()).agents if a.handle}
+        here = {a.agent.name: a for a in ext.request(types.AgentsSessionsRequest()).agents if a.agent}
         for h in handles:
             agent = here.get(h)
             if agent is None:
@@ -219,7 +219,7 @@ calls = Calls(_send_event, _send_audio)
 @ext.pane("call")
 def call_pane(pane) -> types.PaneOpenResponse:
     person = pane.viewer.person if pane.viewer else None
-    handle = (person.handle if person else None) or (person.id.value if person and person.id else "") or "you"
+    handle = (person.name if person else None) or (person.id if person else None) or "you"
     seats[pane.id] = pane
     try:
         calls.sit(str(pane.target.get("call") or ""), pane.id, handle)
@@ -247,12 +247,12 @@ def call_pane(pane) -> types.PaneOpenResponse:
 
 @ext.method("pane.mic")
 def mic(req: types.PaneMicRequest) -> None:
-    calls.mic(req.pane.value if req.pane else "", req.captured_ms, req.opus)
+    calls.mic(req.pane.id if req.pane else "", req.captured_ms, req.opus)
 
 
 @ext.method("pane.viewers")
 def viewers(req: types.PaneViewersRequest) -> None:
-    calls.viewers(req.pane.value if req.pane else "", req.attached)
+    calls.viewers(req.pane.id if req.pane else "", req.attached)
 
 
 @ext.method("health.check")
