@@ -23,8 +23,8 @@ try:
 except ImportError:
     StandInNode = None
 else:
-    AGENTS = [types.AgentSessionOnMachine(handle=types.MemberRef(handle=h), client=client, session_id=sid,
-                                          thread=types.ThreadId(value="thr_1"), folder="/x")
+    AGENTS = [types.AgentSessionOnMachine(agent=types.MemberRef(name=h), client=client, session_id=sid,
+                                          thread=types.ThreadRef(id="thr_1"), folder="/x")
               for h, client, sid in (("research", "claude", "s1"), ("oai", "codex", "s2"))]
 
 
@@ -38,8 +38,8 @@ class ExtensionTests(unittest.TestCase):
             body = p.body
             self.published.append(body)
             self.assertTrue(Path(body["files"][0]["file"]).is_file())
-            return types.FilesPublishResponse(file=types.FileId(value=f"file_{4800 + len(self.published)}"),
-                                              version=types.FileVersionId(value="ver_1"))
+            return types.FilesPublishResponse(file=types.FileRef(id=f"file_{4800 + len(self.published)}"),
+                                              version=types.FileVersionRef(id="ver_1"))
 
         self.sessions_error = None
 
@@ -67,7 +67,7 @@ class ExtensionTests(unittest.TestCase):
 
     def test_it_says_hello(self):
         self.assertEqual(self.info.id, "voice")
-        self.assertEqual(self.info.version, "0.3.0")
+        self.assertEqual(self.info.version, "0.4.0")
 
     def test_the_voices_list_is_there_before_the_model_is(self):
         result = self.node.run("voice.voices").result

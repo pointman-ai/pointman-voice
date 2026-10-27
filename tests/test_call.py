@@ -53,7 +53,7 @@ class CallTests(unittest.TestCase):
 
     def open(self, call_id, person="james"):
         return self.node.open_pane("call", {"call": call_id},
-                                   viewer=types.PaneViewer(person=types.MemberRef(handle=person)))
+                                   viewer=types.PaneViewer(person=types.MemberRef(name=person)))
 
     def test_voice_call_answers_with_its_pane_and_a_join_button(self):
         got = self.start_call()
@@ -92,7 +92,7 @@ class CallTests(unittest.TestCase):
         packets = [bytes([i]) * 40 for i in range(10)]
         t0 = time.monotonic()
         for i, p in enumerate(packets):                         # all at once, as a burst off the network
-            self.node.notify(types.PaneMicRequest(pane=types.PaneId(value=view.id), seq=i, captured_ms=1000 + 20 * i,
+            self.node.notify(types.PaneMicRequest(pane=types.PaneRef(id=view.id), seq=i, captured_ms=1000 + 20 * i,
                                                   opus=p))
         view.wait(lambda v: len(audio(v)) >= 10, timeout=5)
         took = time.monotonic() - t0
@@ -109,7 +109,7 @@ class CallTests(unittest.TestCase):
         phone.wait(lambda v: events(v, "members"))
         self.assertEqual(events(phone, "members")[0]["members"],
                          [{"handle": "james", "role": "person"}, {"handle": "loupe", "role": "person"}])
-        self.node.notify(types.PaneMicRequest(pane=types.PaneId(value=phone.id), seq=0, captured_ms=5, opus=b"p"))
+        self.node.notify(types.PaneMicRequest(pane=types.PaneRef(id=phone.id), seq=0, captured_ms=5, opus=b"p"))
         phone.wait(lambda v: audio(v), timeout=5)
         time.sleep(0.2)
         self.assertEqual(audio(mac), [])
@@ -129,7 +129,7 @@ class CallTests(unittest.TestCase):
         view.wait(lambda v: len(events(v, "members")) == 1)
 
         def viewers(n):
-            self.node.notify(types.PaneViewersRequest(pane=types.PaneId(value=view.id), attached=n))
+            self.node.notify(types.PaneViewersRequest(pane=types.PaneRef(id=view.id), attached=n))
 
         viewers(1)
         view.wait(lambda v: len(events(v, "members")) == 2)     # the first path: a replay
