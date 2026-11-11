@@ -90,8 +90,11 @@ class Seat:
 @dataclass
 class Call:
     id: str
-    agents: list[str]
+    agents: list[str]                    # who was asked to join
     text: str = ""                       # its post's words, kept for the Join button's answer
+    thread: str | None = None            # its thread, from the first pane: a pane in another is refused
+    joined: list[str] = field(default_factory=list)    # agents in the call now
+    voiced: bool = False                 # the engine runs it (agents were asked), so there's no echo
     made: float = field(default_factory=time.monotonic)
     seats: dict[str, Seat] = field(default_factory=dict)
     hands: list[str] = field(default_factory=list)
@@ -108,9 +111,14 @@ class Call:
 class Calls:
     """Every call on this machine. Thread-safe: panes, mics and commands come on threads of their own."""
 
-    def __init__(self, send: Send, audio: Audio, *, echo: bool = True, marks: bool = True):
+    def __init__(self, send: Send, audio: Audio, *, echo: bool = True, marks: bool = True, engine=None,
+                 ended: Callable[[Call, list], None] | None = None):
+        """engine: what speaks for a call's agents (engine.live.Engine), made on first use by calling it.
+        ended: told each call's transcript once it's over."""
         self._send, self._audio = send, audio
         self._echo, self._marks = echo, marks
+        self._engine_of, self._engine = engine, None
+        self._ended = ended
         self._calls: dict[str, Call] = {}
         self._lock = threading.RLock()
 
@@ -144,13 +152,28 @@ class Calls:
 
     # ------------------------------------------------------------ seats
 
-    def sit(self, call_id: str, pane: str, person: str) -> Call:
-        """A device opened the call's pane: it gets the call as it is now, and the others hear it joined."""
+    def engine(self):
+        if self._engine is None and self._engine_of is not None:
+            self._engine = self._engine_of()
+        return self._engine
+
+    def sit(self, call_id: str, pane: str, person: str, thread: str | None = None) -> Call:
+        """A device opened the call's pane: it gets the call as it is now, and the others hear it joined. The
+        call keeps the thread its first pane named, and refuses a pane that names another."""
         c = self.get(call_id)
         with self._lock:
+            if c.thread is None:
+                c.thread = thread or ""
+            elif thread and c.thread and thread != c.thread:
+                raise Ended("That call belongs to another thread.")
             new_person = person not in c.people()
             seat = Seat(pane=pane, person=person)
-            if self._echo:
+            engine = self.engine() if c.agents else None
+            if engine is not None:
+                if not c.voiced:
+                    c.voiced = True
+                    engine.start(c.id, c.thread, c.agents)
+            elif self._echo:
                 seat.echo = Echo(pane, self._audio)
             c.seats[pane] = seat
             if self._marks and c.mark is None:
@@ -158,7 +181,25 @@ class Calls:
             if new_person:
                 self._to_others(c, pane, {"kind": "joined", "handle": person, "role": "person"})
             self._replay(c, seat)
+        if c.voiced:
+            self.engine().seat(c.id, pane, person)
         return c
+
+    def agent_joined(self, call_id: str, handle: str) -> None:
+        with self._lock:
+            c = self._calls.get(call_id)
+            if c is None or handle in c.joined:
+                return
+            c.joined.append(handle)
+            self._to_all(c, {"kind": "joined", "handle": handle, "role": "agent"})
+
+    def agent_left(self, call_id: str, handle: str) -> None:
+        with self._lock:
+            c = self._calls.get(call_id)
+            if c is None or handle not in c.joined:
+                return
+            c.joined.remove(handle)
+            self._to_all(c, {"kind": "left", "handle": handle, "role": "agent"})
 
     def viewers(self, pane: str, attached: int) -> None:
         """A device's paths came and went: each 0 → 1 (a late device, or one whose path dropped) gets a replay,
@@ -173,8 +214,12 @@ class Calls:
 
     def mic(self, pane: str, captured_ms: int, opus: bytes) -> None:
         with self._lock:
-            _, seat = self._seat(pane)
-        if seat is not None and seat.echo is not None and opus:
+            c, seat = self._seat(pane)
+        if seat is None or not opus:
+            return
+        if c.voiced:
+            self.engine().mic(pane, opus)
+        elif seat.echo is not None:
             seat.echo.heard(captured_ms, opus)
 
     def control(self, pane: str, kind: str, fields: dict) -> None:
@@ -187,7 +232,7 @@ class Calls:
                 return
             if kind != "hand":
                 raise ValueError(f"a call takes mute and hand, not {kind!r}")
-            up = bool(fields.get("up", True))
+            up = bool(fields.get("up", False))          # a hand without `up` is lowered, never raised
             if up and seat.person not in c.hands:
                 c.hands.append(seat.person)
             elif not up and seat.person in c.hands:
@@ -198,26 +243,35 @@ class Calls:
 
     def leave(self, pane: str) -> None:
         """A device's pane closed: the last one out ends the call."""
+        ended = None
         with self._lock:
             c, seat = self._seat(pane)
             if seat is None:
                 return
             del c.seats[pane]
-            if seat.echo is not None:
-                seat.echo.stop()
+            if c.voiced:
+                self.engine().unseat(c.id, pane)
             if not c.seats:
-                self._end(c.id)
-                return
-            if seat.person not in c.people():
+                ended = self._take(c.id)
+            elif seat.person not in c.people():
                 if seat.person in c.hands:
                     c.hands.remove(seat.person)
                     self._to_all(c, {"kind": "floor", "hands": list(c.hands)})
                 self._to_all(c, {"kind": "left", "handle": seat.person, "role": "person"})
+        if seat.echo is not None:                     # outside the lock: its thread takes up to a second
+            seat.echo.stop()
+        if ended is not None:
+            self._finish(ended, "ended")
 
-    def end_all(self) -> None:
+    def end_all(self, reason: str = "shutdown") -> None:
+        """The extension is stopping: every device hears why its call ended, then the calls go."""
         with self._lock:
-            for cid in list(self._calls):
-                self._end(cid)
+            calls = [self._take(cid) for cid in list(self._calls)]
+            for c in calls:
+                for p in list(c.seats):
+                    self._send(p, {"kind": "ended", "reason": reason})
+        for c in calls:
+            self._finish(c, reason)
 
     # ------------------------------------------------------------ inside
 
@@ -230,6 +284,7 @@ class Calls:
     def _replay(self, c: Call, seat: Seat) -> None:
         """The call as it is now, in call.md's order: members, the blocks showing, floor, who's talking."""
         members = [{"handle": h, "role": "person"} for h in c.people()]
+        members += [{"handle": h, "role": "agent"} for h in c.joined]
         self._send(seat.pane, {"kind": "members", "members": members})
         self._send(seat.pane, {"kind": "floor", "hands": list(c.hands)})
 
@@ -243,12 +298,20 @@ class Calls:
                 self._send(p, event)
 
     def _end(self, call_id: str) -> None:
-        c = self._calls.pop(call_id, None)
-        if c is None:
-            return
-        for seat in c.seats.values():
+        c = self._take(call_id)
+        if c is not None:
+            self._finish(c, "ended")
+
+    def _take(self, call_id: str) -> Call | None:
+        return self._calls.pop(call_id, None)
+
+    def _finish(self, c: Call, reason: str) -> None:
+        for seat in list(c.seats.values()):
             if seat.echo is not None:
                 seat.echo.stop()
         c.seats.clear()
+        transcript = self.engine().end(c.id, reason) if c.voiced else []
         if c.mark is not None:
             c.mark.stop()
+        if self._ended is not None:
+            self._ended(c, transcript)

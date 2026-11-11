@@ -154,7 +154,7 @@ def call(job) -> dict:
     odd = [h for h in handles if not HANDLE.match(h)]
     if odd:
         raise ValueError(f"{', '.join(odd)} isn't an agent's handle.")
-    rows, ready = [], 0
+    rows, ready, here = [], 0, {}
     if handles:
         # the node lists the agents it has woken since it started: one not woken yet has no session here.
         # A failed request fails the job with the node's own reason (RuntimeError), never an empty list
@@ -168,13 +168,18 @@ def call(job) -> dict:
             else:
                 ready += 1
                 rows.append(f"| @{h} | can join |")
-    lines = ["**A voice call.** Agents don't speak in calls yet: until they do, the call plays your own mic "
-             "back to you a second later, to try the sound. Join from another device with the button."]
+    if ready:
+        lines = [f"**A voice call with {', '.join('@' + h for h in handles)}.** They join when you open it, and "
+                 "answer in their own voices. Join from another device with the button."]
+    else:
+        lines = ["**A voice call.** With no agent in it, the call plays your own mic back to you a second "
+                 "later, to try the sound. Join from another device with the button."]
     if rows:
         lines += ["", "| Agent | |", "|---|---|", *rows]
     lines += ["", models.summary()]
     text = "\n".join(lines)
-    c = calls.start(agents=handles, text=text)
+    able = [h for h in handles if (here.get(h) and (here[h].client or "claude") in LIVE_CLIENTS)] if handles else []
+    c = calls.start(agents=able, text=text)
     return {**_answer(c), "agents": handles, "can_join": ready}
 
 
@@ -213,16 +218,76 @@ def _send_audio(pane: str, captured_ms: int, opus: bytes) -> None:
         p.send(types.PaneAudioRequest(captured_ms=captured_ms, opus=opus))
 
 
-calls = Calls(_send_event, _send_audio)
+class ExtHost:
+    """The engine's way out, through this extension: sound and events to each pane, and the agents' live
+    sessions through the node (agents.join, say, interrupt, leave)."""
+
+    def audio(self, pane, captured_ms, opus):
+        _send_audio(pane, captured_ms, opus)
+
+    def flush(self, pane):
+        p = seats.get(pane)
+        if p is not None:
+            p.send(types.PaneFlushRequest())
+
+    def event(self, pane, event):
+        _send_event(pane, event)
+
+    def join(self, agent, pane, instructions, effort):
+        r = ext.request(types.AgentsJoinRequest(
+            agent=types.MemberRef(handle=agent), pane=types.PaneId(value=pane), instructions=instructions,
+            effort=types.AgentsJoinRequest.Effort.EFFORT_LOW), timeout=120)
+        return {"live": r.live.value if r.live else "", "voice": r.voice, "voice_speed": r.voice_speed}
+
+    def say(self, live, text):
+        ext.request(types.AgentsSayRequest(live=types.RunId(value=live), text=text), timeout=30)
+
+    def interrupt(self, live):
+        ext.request(types.AgentsInterruptRequest(live=types.RunId(value=live)), timeout=10)
+
+    def leave(self, live):
+        ext.request(types.AgentsLeaveRequest(live=types.RunId(value=live)), timeout=30)
+
+    def joined(self, call, handle):
+        calls.agent_joined(call, handle)
+
+    def left(self, call, handle):
+        calls.agent_left(call, handle)
+
+    def log(self, line):
+        ext.log(line)
+
+
+def _engine():
+    from .engine.live import Engine
+    from .engine import stt as listen
+
+    threading.Thread(target=_load_quietly, name="warm-voices", daemon=True).start()
+    threading.Thread(target=listen.load, name="warm-listen", daemon=True).start()
+    return Engine(ExtHost(), ext.settings)
+
+
+def _transcript(c, lines: list) -> None:
+    """A call's words, kept in the state folder for what comes after the call."""
+    if not lines:
+        return
+    folder = state_dir() / "transcripts"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{c.id}.json").write_text(json.dumps({"call": c.id, "thread": c.thread, "agents": c.agents,
+                                                    "lines": lines}, indent=1))
+
+
+calls = Calls(_send_event, _send_audio, engine=_engine, ended=_transcript)
 
 
 @ext.pane("call")
 def call_pane(pane) -> types.PaneOpenResponse:
     person = pane.viewer.person if pane.viewer else None
     handle = (person.handle if person else None) or (person.id.value if person and person.id else "") or "you"
+    thread = pane.context.thread.value if pane.context and pane.context.thread else None
     seats[pane.id] = pane
     try:
-        calls.sit(str(pane.target.get("call") or ""), pane.id, handle)
+        calls.sit(str(pane.target.get("call") or ""), pane.id, handle, thread)
     except Ended as e:
         seats.pop(pane.id, None)
         raise ValueError(str(e)) from None
@@ -255,6 +320,31 @@ def viewers(req: types.PaneViewersRequest) -> None:
     calls.viewers(req.pane.value if req.pane else "", req.attached)
 
 
+def _live(req) -> str:
+    return req.live.value if req.live else ""
+
+
+@ext.method("agents.text")
+def agent_text(req: types.AgentsTextRequest) -> None:
+    calls.engine().agents_event(_live(req), req.seq, "text", {"text": req.text})
+
+
+@ext.method("agents.tool")
+def agent_tool(req: types.AgentsToolRequest) -> None:
+    state = "start" if req.state == types.AgentsToolRequest.State.STATE_START else "end"
+    calls.engine().agents_event(_live(req), req.seq, "tool", {"name": req.name, "state": state})
+
+
+@ext.method("agents.turn")
+def agent_turn(req: types.AgentsTurnRequest) -> None:
+    calls.engine().agents_event(_live(req), req.seq, "turn", {"text": req.text, "interrupted": req.interrupted})
+
+
+@ext.method("agents.left")
+def agent_left(req: types.AgentsLeftRequest) -> None:
+    calls.engine().agents_event(_live(req), req.seq, "left", {"reason": int(req.reason), "error": req.error})
+
+
 @ext.method("health.check")
 def health(_req: types.HealthCheckRequest) -> types.HealthCheckResponse:
     """Its own part under the extension's: the models, ok while they download (never failing)."""
@@ -270,4 +360,7 @@ def status() -> None:
 ext.every(15, status, lane="status")
 
 if __name__ == "__main__":
-    ext.run()
+    try:
+        ext.run()
+    finally:
+        calls.end_all("shutdown")     # every device hears why its call ended

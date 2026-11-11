@@ -34,12 +34,14 @@ def models_here() -> list[Model]:
                   "voices/*.safetensors"], ["kokoro-v1_0.safetensors", "voices/af_heart.safetensors"], "Kokoro voices"),
             Model("listen", "mlx-community/parakeet-tdt-0.6b-v3", ["config.json", "model.safetensors",
                   "tokenizer.model", "tokenizer.vocab", "vocab.txt"], ["model.safetensors"], "Parakeet"),
+            Model("vad", "onnx-community/silero-vad", ["onnx/model.onnx"], ["onnx/model.onnx"], "Silero VAD"),
         ]
     return [
         Model("voices", "hexgrad/Kokoro-82M", ["config.json", "kokoro-v1_0.pth", "voices/*.pt"],
               ["kokoro-v1_0.pth", "voices/af_heart.pt"], "Kokoro voices"),
         Model("listen", "mobiuslabsgmbh/faster-whisper-large-v3-turbo", ["*.json", "*.txt", "model.bin"],
               ["model.bin"], "Whisper turbo"),
+    Model("vad", "onnx-community/silero-vad", ["onnx/model.onnx"], ["onnx/model.onnx"], "Silero VAD"),
     ]
 
 
